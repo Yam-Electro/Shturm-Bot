@@ -14,7 +14,7 @@ device = "cuda:0" if torch.cuda.is_available() else "cpu"
 def voice_processing(message):
   file_info = bot.get_file(message.voice.file_id)
   downloaded_file = bot.download_file(file_info.file_path)
-  with open('new_file.ogg', 'wb') as new_file:
+  with open('new_file.mp3', 'wb') as new_file:
     new_file.write(downloaded_file)
 
 
@@ -44,7 +44,8 @@ def get_text_message(message):
     #bot.send_message(message.from_user.id, message)
     #bot.send_audio(message.from_user.id, message.voice.file_id)
     voice_processing(message)
-    audio_frame = m.audioframe('new_file.ogg')
+
+    audio_frame = m.audioframe('new_file.mp3')
     text = m.audio_to_text(audio_frame)
     bot.send_message(message.from_user.id, audio_frame[:10])
     bot.send_message(message.from_user.id,

@@ -28,6 +28,7 @@ pipe = pipeline(
     device=device,
 )
 
+
 def audioframe(f, normalized=False): 
   a = AudioSegment.from_file(f).set_frame_rate(16000)
   y = np.array(a.get_array_of_samples())
@@ -39,8 +40,6 @@ def audioframe(f, normalized=False):
       return y
 
 def audio_to_text(audio_array):
-    #audio_array = d.audioframe(f'{path}{files[5]}')
-    
     #найдем стартовое  и итоговое значение и обрежем
     start = 0
     for a in range(len(audio_array)):
@@ -55,7 +54,6 @@ def audio_to_text(audio_array):
             break
     
     audio_array = audio_array[start:end]
-    
     batchsize = 1000000
     start_value = 0
     text = ''

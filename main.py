@@ -4,8 +4,11 @@ import telebot
 from telebot import types
 from background import keep_alive  #импорт функции для поддержки работоспособности
 import ml as m
+import torch
 
 bot = telebot.TeleBot('6324167718:AAGaX3cgGVa8QqhEwW2fJ1ioYxkp9q6W7lk')
+
+device = "cuda:0" if torch.cuda.is_available() else "cpu"
 
 
 def voice_processing(message):
@@ -29,6 +32,10 @@ def get_text_message(message):
   #bot.send_message(message.from_user.id, message.text)
   if message.text == '123':
     bot.send_message(message.from_user.id, '321')
+
+  elif message.text == 'device':
+    bot.send_message(message.from_user.id, device)
+
   elif message.text == '/start':
     bot.send_message(message.from_user.id, 'Извините но вы кто такой ваще? ')
 

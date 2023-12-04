@@ -46,7 +46,9 @@ def get_text_message(message):
     voice_processing(message)
     audio_frame = m.audioframe('new_file.ogg')
     text = m.audio_to_text(audio_frame)
-    bot.send_message(message.from_user.id, text)
+    bot.send_message(message.from_user.id, audio_frame[:10])
+    bot.send_message(message.from_user.id,
+                     text if len(text) > 0 else 'нет текста')
   else:
     bot.send_message(message.from_user.id, message.content_type)
 

@@ -2,7 +2,7 @@ import torch
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 from datasets import load_dataset
 from pydub import AudioSegment
-
+import numpy as np
 
 device = "cuda:0" if torch.cuda.is_available() else "cpu"
 torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
@@ -63,7 +63,7 @@ def audio_to_text(audio_array):
     while len(audio_array[start_value:start_value+batchsize]) > 0:
         #пайплайн распознавания
         try:
-            result = pipe({'path': '19f2af64f9c777d4d586f2de',
+            result = pipe({'path': '0d38672e0bbdbdc460af55b8bb84a15b2730db2819f2af64f9c777d4d586f2de',
                           'array':audio_array[start_value:start_value+batchsize],
                           'sampling_rate': 16000})
             text += result["text"]

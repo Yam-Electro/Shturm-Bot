@@ -11,8 +11,8 @@ telebot = "^0.0.5"
 flask = "^3.0.0"
 requests = "^2.31.0"
 transformers = {git = "https://github.com/huggingface/transformers.git", branch = "main" }
-pydub
-numpy
+pydub = "^0.25.1"
+numpy = "^1.26.2"
 
 
 [tool.pyright]

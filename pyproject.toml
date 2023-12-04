@@ -10,6 +10,10 @@ background = "^0.2.1"
 telebot = "^0.0.5"
 flask = "^3.0.0"
 requests = "^2.31.0"
+transformers = {git = "https://github.com/huggingface/transformers.git", branch = "main" }
+pydub
+numpy
+
 
 [tool.pyright]
 # https://github.com/microsoft/pyright/blob/main/docs/configuration.md

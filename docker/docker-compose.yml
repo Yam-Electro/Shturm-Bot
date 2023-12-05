@@ -1,0 +1,32 @@
+version: "3.9"
+
+services:
+  jupyter-tf:
+#    image: tensorflow/tensorflow:latest-gpu-jupyter
+    build:
+      context: ./
+      dockerfile: Dockerfile.GPU
+    environment:
+      JUPYTER_ENABLE_LAB: "yes"
+     # NOTEBOOK_ARGS: "--NotebookApp.password='argon2:$argon2id$v=19$m=10240,t=10,p=8$U1nQghNyr95vWltIo4Qw+Q$BVvGdqa+1BGyOvXO28Pli7GroycddculLh8oA7Qa40w'"
+      NOTEBOOK_ARGS: "--NotebookApp.password='argon2:$$argon2id$$v=19$$m=10240,t=10,p=8$$oVQxXFxWnY51tDzR/uSNPQ$$RQMooVQfyie6GB44jmSFb0cc1MUEdI7oahMGVvX/tU8'"
+    entrypoint:
+      - "bash"
+      - "-c"
+      - "source /etc/bash.bashrc && jupyter notebook --notebook-dir=/tf --ip 0.0.0.0 --no-browser --allow-root $${NOTEBOOK_ARGS}"
+    ports:
+      - 6666:6666
+    volumes:
+      - ./work/:/tf/work/:rw
+      #- /opt/dataset/:/tf/datasets:rw
+      #- /home/fliutch/git/etl-ml-playground:/tf/etl-ml-playground:rw
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1 #1
+              capabilities: [gpu]
+
+
+

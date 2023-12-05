@@ -1,0 +1,41 @@
+# docker build --rm -t tensorflow-gpu 
+
+FROM tensorflow/tensorflow:latest-gpu-jupyter
+
+RUN apt update -qq -y && \
+    apt upgrade -qq -y 
+
+#python
+RUN apt install python3 -y
+RUN apt install python3-pip -y
+RUN /usr/bin/python3 -m pip install --upgrade pip
+RUN apt install git -y
+
+#other components:
+RUN pip3 uninstall notebook -y
+RUN pip3 install notebook > 7 
+#RUN apt update && apt install ffmpeg -y tcl
+RUN pip3 install -U scikit-learn
+RUN pip3 install --user -U nltk
+RUN apt install nano
+RUN apt install curl -y
+RUN apt install wget
+
+# Install from requirements.txt file
+COPY --chown=0:0 requirements.txt /tmp/
+RUN pip3 install --quiet --no-cache-dir --requirement /tmp/requirements.txt
+
+
+# Install from requirements.txt file
+COPY --chown=0:0 requirements.txt /tmp/
+RUN pip3 install --quiet --no-cache-dir --requirement /tmp/requirements.txt
+
+#other components:
+RUN pip3 install torch==1.9.1+cu111 torchvision==0.10.1+cu111 torchaudio==0.9.1 -f https://download.pytorch.org/whl/torch_stable.html
+RUN pip3 install git+https://github.com/openai/whisper.git
+RUN /usr/bin/python3 -m pip install --upgrade pip
+RUN python -m pip install -U matplotlib
+RUN apt update && apt install ffmpeg -y
+RUN pip3 install -U scikit-learn
+RUN pip3 install --user -U nltk
+

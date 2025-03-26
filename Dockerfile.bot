@@ -1,0 +1,21 @@
+FROM nvidia/cuda:12.2.0-devel-ubuntu22.04
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       ffmpeg git python3-pip python3-dev cmake ninja-build wget \
+    && wget https://github.com/Kitware/CMake/releases/download/v3.27.9/cmake-3.27.9-linux-x86_64.sh \
+    && chmod +x cmake-3.27.9-linux-x86_64.sh \
+    && ./cmake-3.27.9-linux-x86_64.sh --skip-license --prefix=/usr/local \
+    && rm cmake-3.27.9-linux-x86_64.sh \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.bot.txt .
+RUN pip install --no-cache-dir -r requirements.bot.txt -vvv
+
+COPY bot.py .
+ENV CUDA_DEVICE_ORDER=PCI_BUS_ID
+ENV VLLM_USE_V1=0
+CMD ["python3", "bot.py"]

@@ -1,0 +1,47 @@
+version: '3.8'
+services:
+  telegram_whisper_bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.bot
+    container_name: telegram_whisper_bot
+    env_file:
+      - .env
+    environment:
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+      - CUDA_VISIBLE_DEVICES=1  # Явно используем GPU 1 (RTX 4080)
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True  # Оптимизация памяти
+      # - TENSOR_PARALLEL_SIZE=2  # Для двух GPU
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+      - ./data:/app/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+  llm:
+    build:
+      context: .
+      dockerfile: Dockerfile.llm
+    container_name: llm_server
+    env_file:
+      - .env
+    environment:
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+      - CUDA_VISIBLE_DEVICES=0  # Явно используем GPU 0 (RTX 3080)
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True  # Оптимизация памяти
+      - VLLM_N_GPUS=1
+    ports:
+      - "8000:8000"  # Для отладки, можно убрать в продакшене
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]              

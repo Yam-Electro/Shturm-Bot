@@ -11,7 +11,13 @@ services:
       - CUDA_DEVICE_ORDER=PCI_BUS_ID
       - CUDA_VISIBLE_DEVICES=1  # Явно используем GPU 1 (RTX 4080)
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True  # Оптимизация памяти
-      # - TENSOR_PARALLEL_SIZE=2  # Для двух GPU
+      - POSTGRES_HOST=db
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=bot_user
+      - POSTGRES_PASSWORD=bot_password
+      - POSTGRES_DB=bot_db
+    depends_on:
+      - db
     volumes:
       - ~/.cache/huggingface:/root/.cache/huggingface
       - ./data:/app/data
@@ -44,4 +50,20 @@ services:
           devices:
             - driver: nvidia
               count: 1
-              capabilities: [gpu]              
+              capabilities: [gpu]  
+
+  db:
+    image: postgres:14.12
+    environment:
+      - POSTGRES_USER=bot_user
+      - POSTGRES_PASSWORD=bot_password
+      - POSTGRES_DB=bot_db
+    ports:
+      - "5491:5432"
+    expose:
+      - 5491
+    volumes:
+      - postgres_data:/var/lib/postgresql/data  
+
+volumes:
+  postgres_data:              

@@ -8,7 +8,7 @@ import os
 import tempfile
 import requests
 import asyncpg
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -134,24 +134,24 @@ async def send_welcome(message: Message):
         reply_markup=keyboard
     )
 
-# @dp.message(F.voice)
-# async def handle_voice(message: Message):
-#     try:
-#         file_id = message.voice.file_id
-#         file = await bot.get_file(file_id)
-#         file_path = file.file_path
-#         with tempfile.NamedTemporaryFile(delete=False, suffix='.ogg') as temp_file:
-#             temp_file_path = temp_file.name
-#             await bot.download_file(file_path, temp_file_path)
-#         wav_path = temp_file_path.replace('.ogg', '.wav')
-#         os.system(f"ffmpeg -i {temp_file_path} -acodec pcm_s16le -ar 16000 {wav_path}")
-#         result = model.transcribe(wav_path)
-#         transcribed_text = result["text"]
-#         await message.reply(f"Распознанный текст:\n{transcribed_text}", parse_mode=ParseMode.HTML)
-#         os.remove(temp_file_path)
-#         os.remove(wav_path)
-#     except Exception as e:
-#         await message.answer(f"Произошла ошибка: {str(e)}", parse_mode=ParseMode.HTML)
+@dp.message(F.voice)
+async def handle_voice(message: Message):
+    try:
+        file_id = message.voice.file_id
+        file = await bot.get_file(file_id)
+        file_path = file.file_path
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.ogg') as temp_file:
+            temp_file_path = temp_file.name
+            await bot.download_file(file_path, temp_file_path)
+        wav_path = temp_file_path.replace('.ogg', '.wav')
+        os.system(f"ffmpeg -i {temp_file_path} -acodec pcm_s16le -ar 16000 {wav_path}")
+        result = model.transcribe(wav_path)
+        transcribed_text = result["text"]
+        await message.reply(f"Распознанный текст:\n{transcribed_text}", parse_mode=ParseMode.HTML)
+        os.remove(temp_file_path)
+        os.remove(wav_path)
+    except Exception as e:
+        await message.answer(f"Произошла ошибка: {str(e)}", parse_mode=ParseMode.HTML)
 
 @dp.message((F.text.startswith(BOT_NAME)) | (F.reply_to_message.from_user.id == bot.id))
 async def handle_text(message: Message):
@@ -191,7 +191,10 @@ async def ask_training_type(message: Message, state: FSMContext):
             InlineKeyboardButton(text="Техническая тренировка", callback_data="training_type:Техническая тренировка")
         ]
     ])
-    await message.answer("Выберите вид тренировки:", reply_markup=keyboard)
+    # Сохраняем сообщение с выбором тренировки
+    sent_message = await message.answer("Выберите вид тренировки:", reply_markup=keyboard)
+    # Сохраняем message_id в состоянии
+    await state.update_data(training_type_message_id=sent_message.message_id)
     await state.set_state(RecordTraining.waiting_for_training_type)
 
 @dp.callback_query(F.data.startswith("training_type:"))
@@ -203,14 +206,36 @@ async def select_training_type(callback_query: CallbackQuery, state: FSMContext)
 
 async def ask_date(message: Message, state: FSMContext):
     calendar = SimpleCalendar()
-    await message.answer("Выберите дату тренировки:", reply_markup=await calendar.start_calendar())
+    # Сохраняем сообщение с календарем
+    sent_message = await message.answer("Выберите дату тренировки:", reply_markup=await calendar.start_calendar())
+    # Сохраняем message_id в состоянии
+    await state.update_data(date_message_id=sent_message.message_id)
     await state.set_state(RecordTraining.waiting_for_date)
 
 @dp.callback_query(SimpleCalendarCallback.filter())
 async def process_date_selection(callback_query: CallbackQuery, callback_data: dict, state: FSMContext):
     selected, date = await SimpleCalendar().process_selection(callback_query, callback_data)
     if selected:
-        # Сохраняем date как объект datetime.date, а не строку
+        # Определяем текущую дату и минимальную допустимую дату (14 дней назад)
+        today = date.today()
+        min_date = today - timedelta(days=14)
+        logger.info(f"Today: {today}, Min date: {min_date}, Selected date: {date}")
+
+        # Проверяем, попадает ли выбранная дата в допустимый диапазон
+        if date > today:
+            await callback_query.message.answer(
+                "Вы не можете выбрать дату в будущем. Пожалуйста, выберите дату не новее сегодняшнего дня."
+            )
+            await ask_date(callback_query.message, state)  # Возвращаем пользователя к выбору даты
+            return
+        if date < min_date:
+            await callback_query.message.answer(
+                f"Вы не можете выбрать дату старше 14 дней ({min_date}). Пожалуйста, выберите более позднюю дату."
+            )
+            await ask_date(callback_query.message, state)  # Возвращаем пользователя к выбору даты
+            return
+
+        # Если дата в допустимом диапазоне, продолжаем
         await state.update_data(training_date=date)
         data = await state.get_data()
         logger.info(f"State data: {data}")
@@ -218,10 +243,20 @@ async def process_date_selection(callback_query: CallbackQuery, callback_data: d
         training_type = data['training_type']
         training_date = data['training_date']
         user_id = callback_query.from_user.id
+        date_message_id = data.get('date_message_id')  # Получаем message_id для сообщения с датой
+        training_type_message_id = data.get('training_type_message_id')  # Получаем message_id для сообщения с типом тренировки
         timestamp = datetime.now()
         try:
             await write_to_db(timestamp, user_id, full_name, training_type, training_date)
             await callback_query.message.answer("Тренировка записана!")
+            # Удаляем сообщение с выбором даты
+            if date_message_id:
+                await bot.delete_message(chat_id=callback_query.message.chat.id, message_id=date_message_id)
+                logger.info(f"Deleted date selection message with message_id {date_message_id}")
+            # Удаляем сообщение с выбором типа тренировки
+            if training_type_message_id:
+                await bot.delete_message(chat_id=callback_query.message.chat.id, message_id=training_type_message_id)
+                logger.info(f"Deleted training type selection message with message_id {training_type_message_id}")
         except Exception as e:
             await callback_query.message.answer(f"Произошла ошибка при записи: {str(e)}")
         await state.clear()  # Завершаем состояние после записи тренировки

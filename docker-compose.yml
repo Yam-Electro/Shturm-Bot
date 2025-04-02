@@ -16,8 +16,8 @@ services:
       - POSTGRES_USER=bot_user
       - POSTGRES_PASSWORD=bot_password
       - POSTGRES_DB=bot_db
-    depends_on:
-      - db
+    ports:
+      - "8443:8443"
     volumes:
       - ~/.cache/huggingface:/root/.cache/huggingface
       - ./data:/app/data

@@ -1,19 +1,21 @@
 import asyncio
+import sys
+import os
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.enums import ParseMode
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 import whisper
-import os
-import tempfile
-import requests
-import asyncpg
 from datetime import datetime, date, timedelta
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram_calendar import SimpleCalendar, SimpleCalendarCallback
 import logging
+import functions as f
+
+# Добавляем отладочный вывод для проверки путей
+print("Current working directory:", os.getcwd())
+print("sys.path:", sys.path)
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -26,94 +28,6 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 # model = whisper.load_model("medium")
-
-# Настройки подключения к PostgreSQL
-POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
-POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
-POSTGRES_USER = os.getenv("POSTGRES_USER", "bot_user")
-POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "bot_password")
-POSTGRES_DB = os.getenv("POSTGRES_DB", "bot_db")
-
-# Глобальная переменная для пула подключений
-db_pool = None
-
-# Инициализация базы данных PostgreSQL
-async def init_db():
-    global db_pool
-    try:
-        db_pool = await asyncpg.create_pool(
-            host=POSTGRES_HOST,
-            port=POSTGRES_PORT,
-            user=POSTGRES_USER,
-            password=POSTGRES_PASSWORD,
-            database=POSTGRES_DB
-        )
-        async with db_pool.acquire() as conn:
-            # Создаём таблицу users
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id BIGINT PRIMARY KEY,
-                    full_name TEXT NOT NULL
-                )
-            ''')
-            # Создаём таблицу trainings
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS trainings (
-                    id SERIAL PRIMARY KEY,
-                    timestamp TIMESTAMP NOT NULL,
-                    user_id BIGINT NOT NULL,
-                    full_name TEXT NOT NULL,
-                    training_type TEXT NOT NULL,
-                    training_date DATE NOT NULL,
-                    FOREIGN KEY (user_id) REFERENCES users(user_id)
-                )
-            ''')
-        logger.info("PostgreSQL database initialized successfully.")
-    except Exception as e:
-        logger.error(f"Error initializing PostgreSQL database: {str(e)}")
-        raise
-
-async def get_full_name(user_id):
-    try:
-        async with db_pool.acquire() as conn:
-            logger.info(f"Executing SELECT for user_id {user_id}")
-            result = await conn.fetchrow(
-                "SELECT full_name FROM users WHERE user_id = $1", user_id
-            )
-            full_name = result['full_name'] if result else None
-            logger.info(f"Retrieved full_name for user_id {user_id}: {full_name}")
-            return full_name
-    except Exception as e:
-        logger.error(f"Error retrieving full_name for user_id {user_id}: {str(e)}")
-        return None
-
-async def set_full_name(user_id, full_name):
-    try:
-        async with db_pool.acquire() as conn:
-            logger.info(f"Inserting full_name for user_id {user_id}: {full_name}")
-            await conn.execute(
-                "INSERT INTO users (user_id, full_name) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET full_name = $2",
-                user_id, full_name
-            )
-            logger.info(f"Successfully set full_name for user_id {user_id}: {full_name}")
-    except Exception as e:
-        logger.error(f"Error setting full_name for user_id {user_id}: {str(e)}")
-        raise
-
-async def write_to_db(timestamp, user_id, full_name, training_type, training_date):
-    try:
-        async with db_pool.acquire() as conn:
-            await conn.execute(
-                '''
-                INSERT INTO trainings (timestamp, user_id, full_name, training_type, training_date)
-                VALUES ($1, $2, $3, $4, $5)
-                ''',
-                timestamp, user_id, full_name, training_type, training_date
-            )
-            logger.info(f"Training recorded for user_id {user_id}: {training_type} on {training_date}")
-    except Exception as e:
-        logger.error(f"Error recording training for user_id {user_id}: {str(e)}")
-        raise
 
 # Определение состояний для FSM
 class RecordTraining(StatesGroup):
@@ -136,46 +50,25 @@ async def send_welcome(message: Message):
 
 @dp.message(F.voice)
 async def handle_voice(message: Message):
-    try:
-        file_id = message.voice.file_id
-        file = await bot.get_file(file_id)
-        file_path = file.file_path
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.ogg') as temp_file:
-            temp_file_path = temp_file.name
-            await bot.download_file(file_path, temp_file_path)
-        wav_path = temp_file_path.replace('.ogg', '.wav')
-        os.system(f"ffmpeg -i {temp_file_path} -acodec pcm_s16le -ar 16000 {wav_path}")
-        result = model.transcribe(wav_path)
-        transcribed_text = result["text"]
+    transcribed_text, error = await f.handle_voice_message(message, bot, model)
+    if error:
+        await message.answer(f"Произошла ошибка: {error}", parse_mode=ParseMode.HTML)
+    else:
         await message.reply(f"Распознанный текст:\n{transcribed_text}", parse_mode=ParseMode.HTML)
-        os.remove(temp_file_path)
-        os.remove(wav_path)
-    except Exception as e:
-        await message.answer(f"Произошла ошибка: {str(e)}", parse_mode=ParseMode.HTML)
 
 @dp.message((F.text.startswith(BOT_NAME)) | (F.reply_to_message.from_user.id == bot.id))
 async def handle_text(message: Message):
-    try:
-        text = message.text.replace(BOT_NAME, "").strip()
-        if not text:
-            await message.reply("Пожалуйста, напиши что-нибудь после моего имени!", parse_mode=ParseMode.HTML)
-            return
-        prompt = f"[INST] <<SYS>> Ты полезный ассистент. Отвечай кратко и по делу. Предпочтительно на русском языке. <<SYS>> {text} [/INST]"
-        response = requests.post(
-            LLM_API_URL,
-            json={"prompt": prompt, "max_tokens": 512, "temperature": 0.7, "top_p": 0.95}
-        )
-        response.raise_for_status()
-        reply_text = response.json()["text"]
+    reply_text, error = await f.handle_text_message(message, BOT_NAME, LLM_API_URL)
+    if error:
+        await message.reply(f"Произошла ошибка: {error}", parse_mode=ParseMode.HTML)
+    else:
         await message.reply(reply_text, parse_mode=ParseMode.HTML)
-    except Exception as e:
-        await message.reply(f"Произошла ошибка: {str(e)}", parse_mode=ParseMode.HTML)
 
 @dp.callback_query(F.data == "record_training")
 async def start_record_training(callback_query: CallbackQuery, state: FSMContext):
     await callback_query.answer()
     user_id = callback_query.from_user.id
-    full_name = await get_full_name(user_id)
+    full_name = await f.get_full_name(user_id)
     if full_name is None:
         await state.set_state(RecordTraining.waiting_for_full_name)
         await callback_query.message.answer("Пожалуйста, введите ваше ФИО:")
@@ -205,61 +98,68 @@ async def select_training_type(callback_query: CallbackQuery, state: FSMContext)
     await ask_date(callback_query.message, state)
 
 async def ask_date(message: Message, state: FSMContext):
-    calendar = SimpleCalendar()
+    calendar = f.create_calendar()
+    keyboard = f.get_calendar_keyboard(calendar)
     # Сохраняем сообщение с календарем
-    sent_message = await message.answer("Выберите дату тренировки:", reply_markup=await calendar.start_calendar())
+    sent_message = await message.answer("Выберите дату тренировки:", reply_markup=keyboard)
     # Сохраняем message_id в состоянии
     await state.update_data(date_message_id=sent_message.message_id)
     await state.set_state(RecordTraining.waiting_for_date)
 
-@dp.callback_query(SimpleCalendarCallback.filter())
-async def process_date_selection(callback_query: CallbackQuery, callback_data: dict, state: FSMContext):
-    selected, date = await SimpleCalendar().process_selection(callback_query, callback_data)
-    if selected:
-        # Определяем текущую дату и минимальную допустимую дату (14 дней назад)
-        today = date.today()
-        min_date = today - timedelta(days=14)
-        logger.info(f"Today: {today}, Min date: {min_date}, Selected date: {date}")
+@dp.callback_query(lambda c: c.data and c.data.startswith('cbcal_'))  # Обрабатываем callback от календаря
+async def process_date_selection(callback_query: CallbackQuery, state: FSMContext):
+    today = date.today()
+    min_date = today - timedelta(days=14)
+    max_date = today
+    selected_date, keyboard = f.process_calendar_selection(callback_query.data, min_date, max_date)
+    
+    if not selected_date:  # Если дата ещё не выбрана, обновляем календарь
+        await callback_query.message.edit_reply_markup(reply_markup=keyboard)
+        await callback_query.answer()
+        return
 
-        # Проверяем, попадает ли выбранная дата в допустимый диапазон
-        if date > today:
-            await callback_query.message.answer(
-                "Вы не можете выбрать дату в будущем. Пожалуйста, выберите дату не новее сегодняшнего дня."
-            )
-            await ask_date(callback_query.message, state)  # Возвращаем пользователя к выбору даты
-            return
-        if date < min_date:
-            await callback_query.message.answer(
-                f"Вы не можете выбрать дату старше 14 дней ({min_date}). Пожалуйста, выберите более позднюю дату."
-            )
-            await ask_date(callback_query.message, state)  # Возвращаем пользователя к выбору даты
-            return
+    # Дата выбрана
+    logger.info(f"Selected date: {selected_date}")
 
-        # Если дата в допустимом диапазоне, продолжаем
-        await state.update_data(training_date=date)
-        data = await state.get_data()
-        logger.info(f"State data: {data}")
-        full_name = data['full_name']
-        training_type = data['training_type']
-        training_date = data['training_date']
-        user_id = callback_query.from_user.id
-        date_message_id = data.get('date_message_id')  # Получаем message_id для сообщения с датой
-        training_type_message_id = data.get('training_type_message_id')  # Получаем message_id для сообщения с типом тренировки
-        timestamp = datetime.now()
-        try:
-            await write_to_db(timestamp, user_id, full_name, training_type, training_date)
-            await callback_query.message.answer("Тренировка записана!")
-            # Удаляем сообщение с выбором даты
-            if date_message_id:
-                await bot.delete_message(chat_id=callback_query.message.chat.id, message_id=date_message_id)
-                logger.info(f"Deleted date selection message with message_id {date_message_id}")
-            # Удаляем сообщение с выбором типа тренировки
-            if training_type_message_id:
-                await bot.delete_message(chat_id=callback_query.message.chat.id, message_id=training_type_message_id)
-                logger.info(f"Deleted training type selection message with message_id {training_type_message_id}")
-        except Exception as e:
-            await callback_query.message.answer(f"Произошла ошибка при записи: {str(e)}")
-        await state.clear()  # Завершаем состояние после записи тренировки
+    # Проверяем, попадает ли выбранная дата в допустимый диапазон (хотя календарь уже ограничивает выбор)
+    if selected_date > today:
+        await callback_query.message.answer(
+            "Вы не можете выбрать дату в будущем. Пожалуйста, выберите дату не новее сегодняшнего дня."
+        )
+        await ask_date(callback_query.message, state)
+        return
+    if selected_date < min_date:
+        await callback_query.message.answer(
+            f"Вы не можете выбрать дату старше 14 дней ({min_date}). Пожалуйста, выберите более позднюю дату."
+        )
+        await ask_date(callback_query.message, state)
+        return
+
+    # Если дата в допустимом диапазоне, продолжаем
+    await state.update_data(training_date=selected_date)
+    data = await state.get_data()
+    logger.info(f"State data: {data}")
+    full_name = data['full_name']
+    training_type = data['training_type']
+    training_date = data['training_date']
+    user_id = callback_query.from_user.id
+    date_message_id = data.get('date_message_id')
+    training_type_message_id = data.get('training_type_message_id')
+    timestamp = datetime.now()
+    try:
+        await f.write_to_db(timestamp, user_id, full_name, training_type, training_date)
+        await callback_query.message.answer("Тренировка записана!")
+        # Удаляем сообщение с выбором даты
+        if date_message_id:
+            await bot.delete_message(chat_id=callback_query.message.chat.id, message_id=date_message_id)
+            logger.info(f"Deleted date selection message with message_id {date_message_id}")
+        # Удаляем сообщение с выбором типа тренировки
+        if training_type_message_id:
+            await bot.delete_message(chat_id=callback_query.message.chat.id, message_id=training_type_message_id)
+            logger.info(f"Deleted training type selection message with message_id {training_type_message_id}")
+    except Exception as e:
+        await callback_query.message.answer(f"Произошла ошибка при записи: {str(e)}")
+    await state.clear()  # Завершаем состояние после записи тренировки
 
 @dp.message(RecordTraining.waiting_for_full_name)
 async def process_full_name(message: Message, state: FSMContext):
@@ -269,9 +169,9 @@ async def process_full_name(message: Message, state: FSMContext):
         return
     user_id = message.from_user.id
     try:
-        await set_full_name(user_id, full_name)
+        await f.set_full_name(user_id, full_name)
         # Проверяем, что ФИО действительно сохранено
-        saved_full_name = await get_full_name(user_id)
+        saved_full_name = await f.get_full_name(user_id)
         if saved_full_name != full_name:
             await message.answer("Произошла ошибка при сохранении ФИО. Попробуйте снова.")
             return
@@ -315,7 +215,7 @@ async def info_command(message: Message):
 @dp.message(Command("stats"))
 async def stats_command(message: Message):
     user_id = message.from_user.id
-    full_name = await get_full_name(user_id)
+    full_name = await f.get_full_name(user_id)
     
     if full_name is None:
         await message.answer(
@@ -324,44 +224,29 @@ async def stats_command(message: Message):
         )
         return
 
-    # Подсчитываем тренировки из базы данных
-    training_stats = {"скалодром": 0, "ОФП": 0, "Техническая тренировка": 0}
-    total_trainings = 0
-    
-    try:
-        async with db_pool.acquire() as conn:
-            records = await conn.fetch(
-                "SELECT training_type FROM trainings WHERE user_id = $1", user_id
-            )
-            if not records:
-                await message.answer(
-                    f"У вас пока нет записанных тренировок, {full_name}.",
-                    parse_mode=ParseMode.HTML
-                )
-                return
-
-            for record in records:
-                training_type = record['training_type']
-                if training_type in training_stats:
-                    training_stats[training_type] += 1
-                total_trainings += 1
-
-        # Формируем сообщение со статистикой
-        stats_message = f"📊 Статистика тренировок для {full_name}:\n"
-        stats_message += f"Всего тренировок: {total_trainings}\n"
-        for training_type, count in training_stats.items():
-            stats_message += f"{training_type}: {count}\n"
-
-        await message.answer(stats_message, parse_mode=ParseMode.HTML)
-
-    except Exception as e:
+    training_stats, total_trainings, error = await f.get_training_stats(user_id)
+    if error:
         await message.answer(
-            f"Произошла ошибка при получении статистики: {str(e)}",
+            f"Произошла ошибка при получении статистики: {error}",
             parse_mode=ParseMode.HTML
         )
+        return
+    if training_stats is None:
+        await message.answer(
+            f"У вас пока нет записанных тренировок, {full_name}.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    # Формируем сообщение со статистикой
+    stats_message = f"📊 Статистика тренировок для {full_name}:\n"
+    stats_message += f"Всего тренировок: {total_trainings}\n"
+    for training_type, count in training_stats.items():
+        stats_message += f"{training_type}: {count}\n"
+    await message.answer(stats_message, parse_mode=ParseMode.HTML)
 
 async def main():
-    await init_db()  # Инициализируем базу данных
+    await f.init_db()  # Инициализируем базу данных
     await dp.start_polling(bot)
 
 if __name__ == '__main__':

@@ -5,3 +5,4 @@ requests==2.32.3
 # Работа с таблицами
 aiogram-calendar>=0.2.0
 asyncpg==0.29.0
+python-telegram-bot-calendar

@@ -17,6 +17,7 @@ RUN pip install --no-cache-dir -r requirements.bot.txt -vvv
 
 COPY bot.py .
 COPY functions.py .
+COPY antispam.py . 
 ENV CUDA_DEVICE_ORDER=PCI_BUS_ID
 ENV VLLM_USE_V1=0
 CMD ["python3", "bot.py"]

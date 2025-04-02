@@ -3,15 +3,16 @@ import sys
 import os
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.enums import ParseMode
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
-import whisper
-from datetime import datetime, date, timedelta
+from aiogram.enums import ParseMode, ChatMemberStatus, UpdateType
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ChatMemberUpdated
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
+import whisper
+from datetime import datetime, date, timedelta
 import logging
 import functions as f
+import antispam
 
 # Добавляем отладочный вывод для проверки путей
 print("Current working directory:", os.getcwd())
@@ -29,11 +30,17 @@ dp = Dispatcher(storage=MemoryStorage())
 
 # model = whisper.load_model("medium")
 
+# Максимальное количество попыток для ответа
+MAX_ATTEMPTS = 3
+
 # Определение состояний для FSM
 class RecordTraining(StatesGroup):
     waiting_for_full_name = State()
     waiting_for_training_type = State()
     waiting_for_date = State()
+
+class AntiSpam(StatesGroup):
+    waiting_for_answer = State()
 
 @dp.message(Command("start"))
 async def send_welcome(message: Message):
@@ -63,6 +70,119 @@ async def handle_text(message: Message):
         await message.reply(f"Произошла ошибка: {error}", parse_mode=ParseMode.HTML)
     else:
         await message.reply(reply_text, parse_mode=ParseMode.HTML)
+
+@dp.chat_member()
+async def handle_new_member(update: ChatMemberUpdated, state: FSMContext):
+    # Проверяем, что это новый пользователь, который присоединился к чату
+    if update.new_chat_member.status == ChatMemberStatus.MEMBER and update.old_chat_member.status in [ChatMemberStatus.LEFT, ChatMemberStatus.KICKED]:
+        user = update.new_chat_member.user
+        user_id = user.id
+        full_name = user.full_name or user.username or "Неизвестный пользователь"
+        chat_id = update.chat.id
+
+        # Пропускаем, если пользователь — бот
+        if user.is_bot:
+            try:
+                await bot.ban_chat_member(chat_id, user_id)
+                await bot.send_message(
+                    chat_id,
+                    f"Долбанный бот {full_name} был удалён из чата."
+                )
+                logger.info(f"Bot {user_id} ({full_name}) was kicked from chat {chat_id}.")
+            except Exception as e:
+                logger.error(f"Error kicking bot {user_id} ({full_name}): {str(e)}")
+            return
+
+        # Генерируем математический вопрос
+        question, correct_answer = antispam.generate_math_question()
+        
+        # Отправляем вопрос пользователю
+        sent_message = await bot.send_message(
+            chat_id,
+            f"Добро пожаловать, {full_name}! Чтобы подтвердить, что вы не бот, ответьте на вопрос:\n{question}\n"
+            f"У вас есть {antispam.RESPONSE_TIMEOUT} секунд на ответ и {MAX_ATTEMPTS} попытки."
+        )
+
+        # Создаём контейнер для хранения задачи таймера
+        timeout_task_container = {"task": None}
+
+        # Сохраняем данные в состоянии
+        await state.set_state(AntiSpam.waiting_for_answer)
+        await state.update_data(
+            user_id=user_id,
+            correct_answer=correct_answer,
+            chat_id=chat_id,
+            full_name=full_name,
+            question_message_id=sent_message.message_id,
+            attempts_left=MAX_ATTEMPTS,
+            timeout_task_container=timeout_task_container
+        )
+
+        # Запускаем таймер для удаления пользователя, если он не ответит вовремя
+        timeout_task = asyncio.create_task(
+            antispam.kick_user_if_no_response(bot, chat_id, user_id, full_name, sent_message.message_id, timeout_task_container)
+        )
+        timeout_task_container["task"] = timeout_task
+
+@dp.message(AntiSpam.waiting_for_answer)
+async def check_answer(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    data = await state.get_data()
+    
+    correct_answer = data.get("correct_answer")
+    chat_id = data.get("chat_id")
+    full_name = data.get("full_name")
+    question_message_id = data.get("question_message_id")
+    attempts_left = data.get("attempts_left", MAX_ATTEMPTS)
+    timeout_task_container = data.get("timeout_task_container")
+
+    # Проверяем, что это тот пользователь, который должен ответить
+    if data.get("user_id") != user_id:
+        await message.reply(f"Я знаю что ты не {full_name}, но если ответишь правильно, за юзера отвечаешь и если он бот то сам и кикай!")
+        #return
+    # отладка
+
+    try:
+        user_answer = int(message.text.strip())
+    except ValueError:
+        await message.reply("Пожалуйста, введите число.")
+        return
+
+    if user_answer == correct_answer:
+        await message.reply("Правильно! Добро пожаловать в чат!")
+        await bot.delete_message(chat_id, question_message_id)
+        # Отменяем таймер, если пользователь ответил правильно
+        if timeout_task_container["task"] is not None:
+            timeout_task_container["task"].cancel()
+            timeout_task_container["task"] = None
+        await state.clear()
+        logger.info(f"User {user_id} ({full_name}) passed the anti-spam check.")
+    else:
+        attempts_left -= 1
+        await state.update_data(attempts_left=attempts_left)
+
+        if attempts_left > 0:
+            await message.reply(f"Неправильно. У вас осталось {attempts_left} попыток. Попробуйте снова.")
+            logger.info(f"User {user_id} ({full_name}) gave wrong answer: {user_answer}, expected: {correct_answer}. Attempts left: {attempts_left}")
+        else:
+            # Исчерпаны все попытки — удаляем пользователя
+            try:
+                await bot.ban_chat_member(chat_id, user_id)
+                await bot.delete_message(chat_id, question_message_id)
+                await bot.send_message(
+                    chat_id,
+                    f"Пользователь {full_name} исчерпал все попытки и был удалён из чата."
+                )
+                logger.info(f"User {user_id} ({full_name}) was kicked due to too many incorrect attempts.")
+            except Exception as e:
+                logger.error(f"Error kicking user {user_id} ({full_name}): {str(e)}")
+                await message.reply(f"Произошла ошибка при удалении: {str(e)}")
+            finally:
+                # Отменяем таймер, так как пользователь уже удалён
+                if timeout_task_container["task"] is not None:
+                    timeout_task_container["task"].cancel()
+                    timeout_task_container["task"] = None
+                await state.clear()
 
 @dp.callback_query(F.data == "record_training")
 async def start_record_training(callback_query: CallbackQuery, state: FSMContext):
@@ -208,7 +328,8 @@ async def info_command(message: Message):
         "- Записывать тренировки (скалодром, ОФП, техническая тренировка)\n"
         "- Распознавать голосовые сообщения\n"
         "- Отвечать на вопросы\n"
-        "Версия: 1.0",
+        "- Проверять новых пользователей на ботов\n"
+        "Версия: 1.1",
         parse_mode=ParseMode.HTML
     )
 
@@ -247,7 +368,13 @@ async def stats_command(message: Message):
 
 async def main():
     await f.init_db()  # Инициализируем базу данных
-    await dp.start_polling(bot)
+    # Указываем типы обновлений, которые бот должен обрабатывать
+    allowed_updates = [
+        UpdateType.MESSAGE,
+        UpdateType.CALLBACK_QUERY,
+        UpdateType.CHAT_MEMBER
+    ]
+    await dp.start_polling(bot, allowed_updates=allowed_updates)
 
 if __name__ == '__main__':
     asyncio.run(main())

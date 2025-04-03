@@ -138,9 +138,8 @@ async def check_answer(message: Message, state: FSMContext):
 
     # Проверяем, что это тот пользователь, который должен ответить
     if data.get("user_id") != user_id:
-        await message.reply(f"Я знаю что ты не {full_name}, но если ответишь правильно, за юзера отвечаешь и если он бот то сам и кикай!")
+        await message.reply(f"Я знаю что ты не {full_name}, ответишь правильно, за юзера отвечаешь и если он бот то сам и кикай!")
         #return
-    # отладка
 
     try:
         user_answer = int(message.text.strip())
@@ -162,18 +161,17 @@ async def check_answer(message: Message, state: FSMContext):
         await state.update_data(attempts_left=attempts_left)
 
         if attempts_left > 0:
-            await message.reply(f"Неправильно. У вас осталось {attempts_left} попыток. Попробуйте снова.")
+            await message.reply(f"Неправильно. До екстерминатуса осталось {attempts_left} попыток.")
             logger.info(f"User {user_id} ({full_name}) gave wrong answer: {user_answer}, expected: {correct_answer}. Attempts left: {attempts_left}")
         else:
             # Исчерпаны все попытки — удаляем пользователя
             try:
-                await bot.ban_chat_member(chat_id, user_id)
+                until_date = message.date + timedelta(seconds=30)
+                await bot.ban_chat_member(chat_id, user_id, revoke_messages = True, until_date = until_date)
                 await bot.delete_message(chat_id, question_message_id)
-                await bot.send_message(
-                    chat_id,
-                    f"Пользователь {full_name} исчерпал все попытки и был удалён из чата."
-                )
                 logger.info(f"User {user_id} ({full_name}) was kicked due to too many incorrect attempts.")
+
+                await bot.send_message(chat_id, f"Пользователь {full_name} не смог сложить два простых числа три раза подряд! Гоните его, насмехайтесь над ним! А я пока его кикну.")
             except Exception as e:
                 logger.error(f"Error kicking user {user_id} ({full_name}): {str(e)}")
                 await message.reply(f"Произошла ошибка при удалении: {str(e)}")

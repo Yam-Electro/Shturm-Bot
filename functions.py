@@ -67,6 +67,17 @@ async def init_db():
             ''')
             logger.info("Table 'new_users' created or already exists.")
 
+            # Создаём таблицу user_messages для хранения message_id сообщений новых пользователей
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS user_messages (
+                    user_id BIGINT NOT NULL,
+                    chat_id BIGINT NOT NULL,
+                    message_id BIGINT NOT NULL,
+                    PRIMARY KEY (user_id, chat_id, message_id)
+                )
+            ''')
+            logger.info("Table 'user_messages' created or already exists.")
+
         logger.info("PostgreSQL database initialized successfully.")
     except Exception as e:
         logger.error(f"Error initializing PostgreSQL database: {str(e)}")
@@ -110,6 +121,47 @@ async def remove_new_user(user_id: int, chat_id: int):
             logger.info(f"User {user_id} removed from new_users in chat {chat_id}.")
     except Exception as e:
         logger.error(f"Error removing user {user_id} from new_users in chat {chat_id}: {str(e)}")
+        raise
+
+async def add_user_message(user_id: int, chat_id: int, message_id: int):
+    """Добавляет message_id сообщения пользователя в таблицу user_messages."""
+    try:
+        async with db_pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO user_messages (user_id, chat_id, message_id) VALUES ($1, $2, $3) ON CONFLICT (user_id, chat_id, message_id) DO NOTHING",
+                user_id, chat_id, message_id
+            )
+            logger.info(f"Message {message_id} from user {user_id} added to user_messages in chat {chat_id}.")
+    except Exception as e:
+        logger.error(f"Error adding message {message_id} for user {user_id} in chat {chat_id}: {str(e)}")
+        raise
+
+async def get_user_messages(user_id: int, chat_id: int) -> list:
+    """Получает все message_id сообщений пользователя из таблицы user_messages."""
+    try:
+        async with db_pool.acquire() as conn:
+            records = await conn.fetch(
+                "SELECT message_id FROM user_messages WHERE user_id = $1 AND chat_id = $2",
+                user_id, chat_id
+            )
+            message_ids = [record['message_id'] for record in records]
+            logger.info(f"Retrieved {len(message_ids)} messages for user {user_id} in chat {chat_id}.")
+            return message_ids
+    except Exception as e:
+        logger.error(f"Error retrieving messages for user {user_id} in chat {chat_id}: {str(e)}")
+        raise
+
+async def remove_user_messages(user_id: int, chat_id: int):
+    """Удаляет все записи о сообщениях пользователя из таблицы user_messages."""
+    try:
+        async with db_pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM user_messages WHERE user_id = $1 AND chat_id = $2",
+                user_id, chat_id
+            )
+            logger.info(f"All messages for user {user_id} removed from user_messages in chat {chat_id}.")
+    except Exception as e:
+        logger.error(f"Error removing messages for user {user_id} in chat {chat_id}: {str(e)}")
         raise
 
 async def get_full_name(user_id):

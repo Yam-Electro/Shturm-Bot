@@ -14,6 +14,7 @@ async def ban_user(bot, chat_id, user_id, full_name):
             f"Пользователь {full_name} теперь горит в аду"
         )
         logger.info(f"User {user_id} ({full_name}) was temporarily banned for 30 seconds.")
+        
     except Exception as e:
         logger.error(f"Error banning user {user_id} ({full_name}): {str(e)}")
         raise

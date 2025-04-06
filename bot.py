@@ -30,9 +30,6 @@ dp = Dispatcher(storage=MemoryStorage())
 
 # model = whisper.load_model("medium")
 
-# Максимальное количество попыток для ответа
-MAX_ATTEMPTS = 3
-
 # Определение состояний для FSM
 class RecordTraining(StatesGroup):
     waiting_for_full_name = State()
@@ -40,7 +37,7 @@ class RecordTraining(StatesGroup):
     waiting_for_date = State()
 
 class AntiSpam(StatesGroup):
-    waiting_for_answer = State()
+    waiting_for_admin_decision = State()
 
 @dp.message(Command("start"))
 async def send_welcome(message: Message):
@@ -83,104 +80,135 @@ async def handle_new_member(update: ChatMemberUpdated, state: FSMContext):
         # Пропускаем, если пользователь — бот
         if user.is_bot:
             try:
-                await bot.ban_chat_member(chat_id, user_id)
+                # await bot.ban_chat_member(chat_id, user_id, until_date=ban_until, revoke_messages=True)
                 await bot.send_message(
                     chat_id,
-                    f"Долбанный бот {full_name} был удалён из чата."
+                    f"Внимание, добавлен бот: {full_name}"
                 )
-                logger.info(f"Bot {user_id} ({full_name}) was kicked from chat {chat_id}.")
+                logger.info(f"Bot {user_id} ({full_name}) was added to {chat_id}.")
             except Exception as e:
                 logger.error(f"Error kicking bot {user_id} ({full_name}): {str(e)}")
             return
 
-        # Генерируем математический вопрос
-        question, correct_answer = antispam.generate_math_question()
-        
-        # Отправляем вопрос пользователю
-        sent_message = await bot.send_message(
-            chat_id,
-            f"Добро пожаловать, {full_name}! Чтобы подтвердить, что вы не бот, ответьте на вопрос:\n{question}\n"
-            f"У вас есть {antispam.RESPONSE_TIMEOUT} секунд на ответ и {MAX_ATTEMPTS} попытки."
-        )
+        # Добавляем пользователя в таблицу new_users
+        try:
+            await f.add_new_user(user_id, chat_id)
+            logger.info(f"New user {user_id} ({full_name}) joined chat {chat_id} and was added to new_users.")
+        except Exception as e:
+            logger.error(f"Error adding new user {user_id} to new_users in chat {chat_id}: {str(e)}")
 
-        # Создаём контейнер для хранения задачи таймера
-        timeout_task_container = {"task": None}
-
-        # Сохраняем данные в состоянии
-        await state.set_state(AntiSpam.waiting_for_answer)
-        await state.update_data(
-            user_id=user_id,
-            correct_answer=correct_answer,
-            chat_id=chat_id,
-            full_name=full_name,
-            question_message_id=sent_message.message_id,
-            attempts_left=MAX_ATTEMPTS,
-            timeout_task_container=timeout_task_container
-        )
-
-        # Запускаем таймер для удаления пользователя, если он не ответит вовремя
-        timeout_task = asyncio.create_task(
-            antispam.kick_user_if_no_response(bot, chat_id, user_id, full_name, sent_message.message_id, timeout_task_container)
-        )
-        timeout_task_container["task"] = timeout_task
-
-@dp.message(AntiSpam.waiting_for_answer)
-async def check_answer(message: Message, state: FSMContext):
-    user_id = message.from_user.id
-    data = await state.get_data()
-    
-    correct_answer = data.get("correct_answer")
-    chat_id = data.get("chat_id")
-    full_name = data.get("full_name")
-    question_message_id = data.get("question_message_id")
-    attempts_left = data.get("attempts_left", MAX_ATTEMPTS)
-    timeout_task_container = data.get("timeout_task_container")
-
-    # Проверяем, что это тот пользователь, который должен ответить
-    if data.get("user_id") != user_id:
-        await message.reply(f"Я знаю что ты не {full_name}, ответишь правильно, за юзера отвечаешь и если он бот то сам и кикай!")
-        #return
-
+@dp.callback_query(F.data.startswith("antispam:"))
+async def handle_antispam_decision(callback_query: CallbackQuery, state: FSMContext):
+    # Проверяем, является ли пользователь администратором
+    chat_id = callback_query.message.chat.id
+    user_id = callback_query.from_user.id
     try:
-        user_answer = int(message.text.strip())
-    except ValueError:
-        await message.reply("Пожалуйста, введите число.")
+        member = await bot.get_chat_member(chat_id, user_id)
+        if member.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]:
+            await callback_query.answer("Только администраторы могут принимать решение!", show_alert=True)
+            logger.info(f"User {user_id} tried to make an antispam decision but is not an admin in chat {chat_id}.")
+            return
+    except Exception as e:
+        logger.error(f"Error checking admin status for user {user_id} in chat {chat_id}: {str(e)}")
+        await callback_query.answer("Произошла ошибка при проверке вашего статуса.", show_alert=True)
         return
 
-    if user_answer == correct_answer:
-        await message.reply("Правильно! Добро пожаловать в чат!")
-        await bot.delete_message(chat_id, question_message_id)
-        # Отменяем таймер, если пользователь ответил правильно
-        if timeout_task_container["task"] is not None:
-            timeout_task_container["task"].cancel()
-            timeout_task_container["task"] = None
-        await state.clear()
-        logger.info(f"User {user_id} ({full_name}) passed the anti-spam check.")
-    else:
-        attempts_left -= 1
-        await state.update_data(attempts_left=attempts_left)
+    await callback_query.answer()
+    data = callback_query.data.split(":")
+    action = data[1]  # "allow" или "ban"
+    target_user_id = int(data[2])
+    full_name = data[3]
 
-        if attempts_left > 0:
-            await message.reply(f"Неправильно. До екстерминатуса осталось {attempts_left} попыток.")
-            logger.info(f"User {user_id} ({full_name}) gave wrong answer: {user_answer}, expected: {correct_answer}. Attempts left: {attempts_left}")
-        else:
-            # Исчерпаны все попытки — удаляем пользователя
-            try:
-                until_date = message.date + timedelta(seconds=30)
-                await bot.ban_chat_member(chat_id, user_id, revoke_messages = True, until_date = until_date)
-                await bot.delete_message(chat_id, question_message_id)
-                logger.info(f"User {user_id} ({full_name}) was kicked due to too many incorrect attempts.")
+    # Удаляем сообщение с кнопками
+    await bot.delete_message(chat_id, callback_query.message.message_id)
 
-                await bot.send_message(chat_id, f"Пользователь {full_name} не смог сложить два простых числа три раза подряд! Гоните его, насмехайтесь над ним! А я пока его кикну.")
-            except Exception as e:
-                logger.error(f"Error kicking user {user_id} ({full_name}): {str(e)}")
-                await message.reply(f"Произошла ошибка при удалении: {str(e)}")
-            finally:
-                # Отменяем таймер, так как пользователь уже удалён
-                if timeout_task_container["task"] is not None:
-                    timeout_task_container["task"].cancel()
-                    timeout_task_container["task"] = None
-                await state.clear()
+    # Удаляем пользователя из таблицы new_users после принятия решения
+    try:
+        await f.remove_new_user(target_user_id, chat_id)
+        logger.info(f"User {target_user_id} ({full_name}) removed from new_users after decision in chat {chat_id}.")
+    except Exception as e:
+        logger.error(f"Error removing user {target_user_id} from new_users in chat {chat_id}: {str(e)}")
+        await bot.send_message(
+            chat_id,
+            f"Произошла ошибка при удалении пользователя {full_name} из списка новых пользователей: {str(e)}"
+        )
+
+    if action == "allow":
+        try:
+            await bot.send_message(
+                chat_id,
+                f"Пользователь {full_name} был оставлен в чате."
+            )
+            logger.info(f"User {target_user_id} ({full_name}) was allowed to stay in chat {chat_id}.")
+        except Exception as e:
+            await bot.send_message(
+                chat_id,
+                f"Произошла ошибка при обработке решения для пользователя {full_name}: {str(e)}"
+            )
+            logger.error(f"Error processing allow decision for user {target_user_id} in chat {chat_id}: {str(e)}")
+    elif action == "ban":
+        try:
+            # Баним пользователя
+            await antispam.ban_user(bot, chat_id, target_user_id, full_name)
+
+        except Exception as e:
+            await bot.send_message(
+                chat_id,
+                f"Произошла ошибка при бане пользователя {full_name}: {str(e)}"
+            )
+
+    # Очищаем состояние
+    await state.clear()
+
+@dp.message(F.text | F.voice | F.photo | F.video | F.document)  # Обрабатываем любые сообщения
+async def handle_first_message(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    full_name = message.from_user.full_name or message.from_user.username or "Неизвестный пользователь"
+
+    # Пропускаем, если это сообщение от бота
+    if message.from_user.is_bot:
+        return
+
+    # Проверяем, есть ли пользователь в таблице new_users
+    try:
+        if not await f.is_new_user(user_id, chat_id):
+            return
+    except Exception as e:
+        logger.error(f"Error checking if user {user_id} is in new_users in chat {chat_id}: {str(e)}")
+        await message.answer(f"Произошла ошибка при проверке пользователя: {str(e)}")
+        return
+
+    # Сохраняем message_id в состоянии
+    state_data = await state.get_data()
+    user_messages = state_data.get(f"messages_{user_id}", [])
+    user_messages.append(message.message_id)
+    await state.update_data({f"messages_{user_id}": user_messages})
+    logger.info(f"Stored message_id {message.message_id} for user {user_id} in chat {chat_id}.")
+
+    # Создаём клавиатуру с кнопками "Да" и "Баним"
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="не, вроде нормальный чел", callback_data=f"antispam:allow:{user_id}:{full_name}"),
+            InlineKeyboardButton(text="ГОРИ В АДУ!", callback_data=f"antispam:ban:{user_id}:{full_name}")
+        ]
+    ])
+
+    # Отправляем сообщение с вопросом
+    sent_message = await bot.send_message(
+        chat_id,
+        f"А не бот ли часом, {full_name}?",
+        reply_markup=keyboard
+    )
+
+    # Сохраняем данные в состоянии
+    await state.set_state(AntiSpam.waiting_for_admin_decision)
+    await state.update_data(
+        user_id=user_id,
+        chat_id=chat_id,
+        full_name=full_name,
+        decision_message_id=sent_message.message_id
+    )
 
 @dp.callback_query(F.data == "record_training")
 async def start_record_training(callback_query: CallbackQuery, state: FSMContext):
@@ -224,7 +252,7 @@ async def ask_date(message: Message, state: FSMContext):
     await state.update_data(date_message_id=sent_message.message_id)
     await state.set_state(RecordTraining.waiting_for_date)
 
-@dp.callback_query(lambda c: c.data and c.data.startswith('cbcal_'))  # Обрабатываем callback от календаря
+@dp.callback_query(lambda c: c.data and c.data.startswith('WEEKDAYS_') or c.data.startswith('DAY_') or c.data.startswith('MONTH_') or c.data.startswith('YEAR_'))
 async def process_date_selection(callback_query: CallbackQuery, state: FSMContext):
     today = date.today()
     min_date = today - timedelta(days=14)
@@ -239,7 +267,7 @@ async def process_date_selection(callback_query: CallbackQuery, state: FSMContex
     # Дата выбрана
     logger.info(f"Selected date: {selected_date}")
 
-    # Проверяем, попадает ли выбранная дата в допустимый диапазон (хотя календарь уже ограничивает выбор)
+    # Проверяем, попадает ли выбранная дата в допустимый диапазон
     if selected_date > today:
         await callback_query.message.answer(
             "Вы не можете выбрать дату в будущем. Пожалуйста, выберите дату не новее сегодняшнего дня."
@@ -365,7 +393,13 @@ async def stats_command(message: Message):
     await message.answer(stats_message, parse_mode=ParseMode.HTML)
 
 async def main():
-    await f.init_db()  # Инициализируем базу данных
+    try:
+        await f.init_db()  # Инициализируем базу данных
+        logger.info("Database initialization completed.")
+    except Exception as e:
+        logger.error(f"Failed to initialize database: {str(e)}")
+        raise
+
     # Указываем типы обновлений, которые бот должен обрабатывать
     allowed_updates = [
         UpdateType.MESSAGE,

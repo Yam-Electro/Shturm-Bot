@@ -80,12 +80,13 @@ async def handle_new_member(update: ChatMemberUpdated, state: FSMContext):
         # Пропускаем, если пользователь — бот
         if user.is_bot:
             try:
-                # await bot.ban_chat_member(chat_id, user_id, until_date=ban_until, revoke_messages=True)
+                ban_until = datetime.now() + timedelta(seconds=30)
+                await bot.ban_chat_member(chat_id, user_id, until_date=ban_until)
                 await bot.send_message(
                     chat_id,
-                    f"Внимание, добавлен бот: {full_name}"
+                    f"Бот {full_name} был временно забанен на 30 секунд."
                 )
-                logger.info(f"Bot {user_id} ({full_name}) was added to {chat_id}.")
+                logger.info(f"Bot {user_id} ({full_name}) was temporarily banned for 30 seconds from chat {chat_id}.")
             except Exception as e:
                 logger.error(f"Error kicking bot {user_id} ({full_name}): {str(e)}")
             return
@@ -135,10 +136,8 @@ async def handle_antispam_decision(callback_query: CallbackQuery, state: FSMCont
 
     if action == "allow":
         try:
-            await bot.send_message(
-                chat_id,
-                f"Пользователь {full_name} был оставлен в чате."
-            )
+            # Удаляем записи о сообщениях пользователя из user_messages, так как он остаётся
+            await f.remove_user_messages(target_user_id, chat_id)
             logger.info(f"User {target_user_id} ({full_name}) was allowed to stay in chat {chat_id}.")
         except Exception as e:
             await bot.send_message(
@@ -151,6 +150,22 @@ async def handle_antispam_decision(callback_query: CallbackQuery, state: FSMCont
             # Баним пользователя
             await antispam.ban_user(bot, chat_id, target_user_id, full_name)
 
+            # Получаем список message_id из базы данных
+            user_messages = await f.get_user_messages(target_user_id, chat_id)
+
+            # Удаляем все сообщения пользователя
+            deleted_count = 0
+            for message_id in user_messages:
+                try:
+                    await bot.delete_message(chat_id, message_id)
+                    deleted_count += 1
+                except Exception as e:
+                    logger.warning(f"Could not delete message {message_id} from user {target_user_id} in chat {chat_id}: {str(e)}")
+
+            # Удаляем записи о сообщениях из базы данных
+            await f.remove_user_messages(target_user_id, chat_id)
+
+            logger.info(f"User {target_user_id} ({full_name}) was banned, deleted {deleted_count} messages in chat {chat_id}.")
         except Exception as e:
             await bot.send_message(
                 chat_id,
@@ -179,25 +194,26 @@ async def handle_first_message(message: Message, state: FSMContext):
         await message.answer(f"Произошла ошибка при проверке пользователя: {str(e)}")
         return
 
-    # Сохраняем message_id в состоянии
-    state_data = await state.get_data()
-    user_messages = state_data.get(f"messages_{user_id}", [])
-    user_messages.append(message.message_id)
-    await state.update_data({f"messages_{user_id}": user_messages})
-    logger.info(f"Stored message_id {message.message_id} for user {user_id} in chat {chat_id}.")
+    # Сохраняем message_id в базе данных
+    try:
+        await f.add_user_message(user_id, chat_id, message.message_id)
+    except Exception as e:
+        logger.error(f"Error saving message {message.message_id} for user {user_id} in chat {chat_id}: {str(e)}")
+        await message.answer(f"Произошла ошибка при сохранении сообщения: {str(e)}")
+        return
 
     # Создаём клавиатуру с кнопками "Да" и "Баним"
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="не, вроде нормальный чел", callback_data=f"antispam:allow:{user_id}:{full_name}"),
-            InlineKeyboardButton(text="ГОРИ В АДУ!", callback_data=f"antispam:ban:{user_id}:{full_name}")
+            InlineKeyboardButton(text="Да", callback_data=f"antispam:allow:{user_id}:{full_name}"),
+            InlineKeyboardButton(text="Баним", callback_data=f"antispam:ban:{user_id}:{full_name}")
         ]
     ])
 
     # Отправляем сообщение с вопросом
     sent_message = await bot.send_message(
         chat_id,
-        f"А не бот ли часом, {full_name}?",
+        f"Это сообщение от нового пользователя {full_name}. Оставляем?",
         reply_markup=keyboard
     )
 

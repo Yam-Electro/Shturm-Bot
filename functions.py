@@ -6,7 +6,7 @@ import asyncpg
 from datetime import datetime, date, timedelta
 import whisper
 import logging
-from aiogram.types import InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from telegram_bot_calendar import DetailedTelegramCalendar
 
 # Настройка логирования
@@ -41,6 +41,8 @@ async def init_db():
                     full_name TEXT NOT NULL
                 )
             ''')
+            logger.info("Table 'users' created or already exists.")
+
             # Создаём таблицу trainings
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS trainings (
@@ -53,9 +55,61 @@ async def init_db():
                     FOREIGN KEY (user_id) REFERENCES users(user_id)
                 )
             ''')
+            logger.info("Table 'trainings' created or already exists.")
+
+            # Создаём таблицу new_users для хранения новых пользователей
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS new_users (
+                    user_id BIGINT NOT NULL,
+                    chat_id BIGINT NOT NULL,
+                    PRIMARY KEY (user_id, chat_id)
+                )
+            ''')
+            logger.info("Table 'new_users' created or already exists.")
+
         logger.info("PostgreSQL database initialized successfully.")
     except Exception as e:
         logger.error(f"Error initializing PostgreSQL database: {str(e)}")
+        raise
+
+async def add_new_user(user_id: int, chat_id: int):
+    """Добавляет пользователя в список новых пользователей в базе данных."""
+    try:
+        async with db_pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO new_users (user_id, chat_id) VALUES ($1, $2) ON CONFLICT (user_id, chat_id) DO NOTHING",
+                user_id, chat_id
+            )
+            logger.info(f"User {user_id} added to new_users in chat {chat_id}.")
+    except Exception as e:
+        logger.error(f"Error adding user {user_id} to new_users in chat {chat_id}: {str(e)}")
+        raise
+
+async def is_new_user(user_id: int, chat_id: int) -> bool:
+    """Проверяет, есть ли пользователь в списке новых пользователей."""
+    try:
+        async with db_pool.acquire() as conn:
+            result = await conn.fetchrow(
+                "SELECT 1 FROM new_users WHERE user_id = $1 AND chat_id = $2",
+                user_id, chat_id
+            )
+            logger.info(f"Checked if user {user_id} is in new_users in chat {chat_id}: {'Yes' if result else 'No'}")
+            return result is not None
+    except Exception as e:
+        logger.error(f"Error checking if user {user_id} is in new_users in chat {chat_id}: {str(e)}")
+        raise
+
+async def remove_new_user(user_id: int, chat_id: int):
+    """Удаляет пользователя из списка новых пользователей."""
+    try:
+        async with db_pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM new_users WHERE user_id = $1 AND chat_id = $2",
+                user_id, chat_id
+            )
+            logger.info(f"User {user_id} removed from new_users in chat {chat_id}.")
+    except Exception as e:
+        logger.error(f"Error removing user {user_id} from new_users in chat {chat_id}: {str(e)}")
         raise
 
 async def get_full_name(user_id):
